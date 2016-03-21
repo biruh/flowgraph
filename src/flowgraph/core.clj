@@ -5,19 +5,18 @@
 
 (import '[java.util Random])
 
-(set-current-implementation :vectorz)  ;; use Vectorz as default matrix
+(m/set-current-implementation :vectorz)  ;; use Vectorz as default matrix
 
-(defn ginput [n]
-  {:name n :type :input })
-
-(defn gvariable [n]
-  {:name n :type :variable })
 
 (defn sample-float [a b]
    (+ a (* (rand) (- b a))))
 
 (defn sample-gaussian [rng mu std]
    (+ mu (* (.nextGaussian rng)  std)))
+
+(defn getRandomValue [a b]
+  (sample-float a b))
+
 
 (defn getRandomVector [ncol std]
   (m/array (repeatedly ncol #(sample-float (* -1 std) std))))
@@ -49,63 +48,14 @@
   (* t (- 1 t )))
 
 
-(defn sum [& args]
-  (let [inputs (map (fn [x]
-                           (if (number? x)
-                             {:type :constant :output x}
-                             (:forward x))) args)
-        cinputs (map #(:output %) inputs)
-        ob {:inputs inputs
-            :gradients []
-            :adjusted_inputs []
-            :type :sum
-            :target 0.0
-            :learning_rate 1.0
-            :output (apply + (map #(:output %) inputs ))}]
- {:forward ob
-  :backward (fn [grad]
-              (let [target (+ (:output ob) (* (:output ob) grad))
-                    lgrads (* (:learning_rate ob) grad)
-                    adinputs (+ cinputs (* lgrads cinputs))
-                    adjustedoutput (apply + adinputs)
-                    ]
-          (assoc ob :grad grad
-                 :target target
-                 :gradients lgrads
-                 :adjusted_inputs adinputs
-                 :adjusted_output adjustedoutput)))}))
-
-
-(defn mul [& args]
-  (let [inputs (map (fn [x]
-                           (if (number? x)
-                             {:type :constant :output x}
-                             (:forward x))) args)
-        cinputs (map #(:output %) inputs)
-        output (apply * (map #(:output %) inputs ))
-        ob {:inputs inputs
-            :gradients []
-            :adjusted_inputs []
-            :type :mul
-            :target 0.0
-            :learning_rate 0.1
-            :adjusted_output output
-            :output output}]
- {:forward ob
-  :backward (fn [grad]
-              (let [target (+ (:output ob) (* (:output ob) grad))
-                    lgrad (* (:learning_rate ob) grad)
-                    grads (m/mul cinputs lgrad)
-                    adinputs (m/add grads cinputs)
-                    adjustedoutput (apply * adinputs)]
-          (assoc ob :grad grad
-                    :target target
-                    :gradients grads
-                    :adjusted_inputs adinputs
-                    :adjusted_output adjustedoutput)))}))
 
 (defn toGraphObject [x]
   (cond
+    (keyword? x)
+    {:forward (fn [inputs]
+                (assert (contains? inputs x))
+                {:output (x inputs)})
+     :backward (fn [inputs] inputs)}
     (or (m/matrix? x) (m/vec? x) (number? x))
     {:forward (fn [inputs] {:output x})
      :backward (fn [inputs] inputs)}
@@ -113,7 +63,7 @@
     {:forward (fn [inputs]
                 (let [k (:name x)]
                   (assert (contains? inputs k))
-                  {:output (:value (k inputs))}
+                  {:output (k inputs)}
                   ))
      :backward (fn [inputs]
                  inputs)}
@@ -121,7 +71,7 @@
     {:forward (fn [inputs]
                 (let [k (:name x)]
                   (assert (contains? inputs k))
-                  {:output (:value (k inputs))}))
+                  {:output (k inputs)}))
      :backward (fn [inputs]
                 (let [k (:name x)
                       value (:value (k inputs))
@@ -134,6 +84,58 @@
     :else
     x
   ))
+
+(defn sub [& args]
+ (let [args     (map toGraphObject args)
+       g_type   {:type  :mul}
+       ff       (fn [inputs]
+                   (let [os (map (fn [x] ((:forward x) inputs)) args)]
+                     (assoc g_type
+                            :inputs inputs
+                            :output (reduce - (map (fn [x] (:output x)) os)))))]
+   {:forward  ff
+    :backward (fn [inputs]
+                 (map (fn [x] ((:backward x) inputs)) args))}))
+
+(defn sum [& args]
+ (let [args     (map toGraphObject args)
+       g_type   {:type  :mul}
+       ff       (fn [inputs]
+                   (let [os (map (fn [x] ((:forward x) inputs)) args)]
+                     (assoc g_type
+                            :inputs inputs
+                            :output (reduce + (map (fn [x] (:output x)) os)))))]
+   {:forward  ff
+    :backward (fn [inputs]
+                 (map (fn [x] ((:backward x) inputs)) args))}))
+
+
+(defn mul [& args]
+ (let [args     (map toGraphObject args)
+       g_type   {:type  :mul}
+       ff       (fn [inputs]
+                   (let [os (map (fn [x] ((:forward x) inputs)) args)]
+                     (assoc g_type
+                            :inputs inputs
+                            :output (reduce * (map (fn [x] (:output x)) os)))))]
+   {:forward  ff
+    :backward (fn [grad inputs]
+                  (map (fn [x] (comment (:backward x) inputs)
+                         grad) (filter #(= (:type %) :variable) args)))}))
+
+(defn div [x y]
+ (let [xg     (toGraphObject x)
+       yg     (toGraphObject y)
+       g_type   {:type  :div}
+       ff       (fn [inputs]
+                   (let [xo ((:forward xg) inputs)
+                         yo ((:forward yg) inputs)]
+                     (assoc g_type
+                            :inputs inputs
+                            :output (/ (:output xo) (:output yo)))))]
+   {:forward  ff
+    :backward (fn [inputs]
+                 ((:backward xg) inputs))}))
 
 (defn mmul [w v]
  (let [wi (toGraphObject w)
@@ -149,3 +151,54 @@
    {:forward  ff
     :backward (fn [inputs]
                ((:backward vi) ((:backward wi) inputs )))}))
+
+
+
+(defn sqr [v]
+ (let [vi (toGraphObject v)
+       g_type {:type            :sqr}
+       ff (fn [inputs]
+               (let [vo ((:forward vi) inputs)]
+                 (assoc g_type
+                        :inputs vo
+                        :output (:output vo))))]
+   {:forward  ff
+    :backward (fn [inputs]
+               ((:backward vi) inputs))}))
+
+(defn minimize [g]
+  g)
+
+(defn input [n]
+  {:name n :type :input})
+
+(defn variable [n]
+  {:name n :type :variable})
+
+(defn graph [t]
+  t)
+
+
+(defn predict [mgraph variables data]
+  ((:forward mgraph) (merge (map variable variables) (map input data))))
+
+(defn solve [mgraph evaluator variables data]
+  (let [pred   (predict mgraph variables data)
+        inputs (merge (map variable variables) (merge (:output pred)   (map input data)))
+        ev     ((:forward evaluator) inputs)]
+    ((:backward mgraph) (:output evaluator) inputs)))
+
+
+
+(defn iter [mgraph evaluator variables data]
+  (loop [idx       0
+         variables variables
+         o         nil]
+         (if (>= idx (count data))
+            {:variables variables :output o}
+            (recur (inc idx)
+                   (solve   mgraph evaluator variables (nth data idx))
+                   (predict mgraph variables (nth data idx))))))
+
+
+

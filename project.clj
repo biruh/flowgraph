@@ -3,4 +3,7 @@
   :url "http://example.com/FIXME"
   :license {:name "The MIT License (MIT)"
             :url "https://opensource.org/licenses/MIT"}
-  :dependencies [[org.clojure/clojure "1.7.0"]])
+  :dependencies [[org.clojure/clojure "1.7.0"]
+                 [net.mikera/core.matrix "0.50.0"]
+                 [net.mikera/vectorz-clj "0.43.1"]]
+  :profiles {:dev {:plugins [[com.jakemccrary/lein-test-refresh "0.14.0"]]}})

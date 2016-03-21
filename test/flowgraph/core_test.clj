@@ -1,26 +1,29 @@
 (ns flowgraph.core-test
   (:require [clojure.test :refer :all]
-            [flowgraph.core :refer :all]))
+            [clojure.core.matrix :as m]
+            [clojure.core.matrix.operators :as ma]
+            [flowgraph.core :as fg]))
 
-(def sample_random_data (m/emap (fn [x] [x (* x 2)]) (getRandomVector 100 0.8)))
+(defn learn_2 []
+  (let [data         (map (fn [x] {:value x :label (* x 2)}) (fg/getRandomVector 100 0.8))
+        g            (fg/graph    (fg/mul :weights :value))
+        evaluator    (fg/minimize (fg/sqr (fg/sub :label :output)))]
+       (fg/iter g evaluator {:weight (fg/getRandomValue -1 1)} data)))
 
 
+
+(deftest multiplication-test
+  (testing "element multiplication"
+    (is (= (:output (fg/predict (fg/graph (fg/mul :weights :value)) {} {:weights 2 :value 2})) 4)))
+  (testing "element multiplication solving"
+    (let [g (fg/graph (fg/mul :weights :value))
+          e (fg/div :value weights)
+          s (fg/solve g e {:weights 2} {:value 2})
+          p (fg/predict g s {:value 2})]
+    (is (= (:output p) 1)))))
 
 (deftest linear-regresssion-test
   (testing "values should be close to 2"
-    (let [xor_solver (graph (mul (variable :weights) (input :value)))
-          evaluator  (minimize (sqr (sub :target :output )))
-          amount     (count sample_random_data)
-          final_output (loop [idx 0
-                              weight (getRandomValue)
-                              o      (predict xor_solver {:weights weight :value (nth (nth sample_random_data idx) 0) })]
-                              (if (>= idx amount)
-                                o
-                                (let [new_o (predict xor_solver {:weights weight :bias bias :xor (nth (nth xor 0)  0)})
-                                      nw    (solve   xor_solver evaluator {:weights weight
-                                                                           :bias bias
-                                                                           :xor (nth (nth xor 0)  0)
-                                                                           :target (nth (nth xor 0) 1)
-                                                                           :output new_o})]
-                                  (recur (inc idx) (:weights nw) (:bias nw) new_o))))]
-      (is (and (< 1.9 final_output) (> 2.1 final_output))))))
+    (let [r (learn_2)]
+      (is (and (< 1.9 (:output r))
+               (> 2.1 (:output r)))))))
