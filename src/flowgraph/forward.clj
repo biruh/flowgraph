@@ -1,42 +1,49 @@
 (ns flowgraph.forward
   (:require
     [flowgraph.core :as fg]
+    [clojure.core.matrix.random :as r]
     [clojure.core.matrix :as m]
-    [clojure.core.matrix.operators :as ma]))
+    [clojure.core.matrix.operators :as ma]
+    [clojure.core.async :as a :refer [>! <! >!! <!! go go-loop chan buffer close! thread alts! alts!! timeout]]
+    ))
 
 (import '[java.util Random])
 
 (m/set-current-implementation :vectorz)  ;; use Vectorz as default matrix
 
+(defn sigmoid-activation [weight bias input]
+  (m/logistic (m/add (m/mmul weight input) bias)))
 
-(defn layer [input target weight learning_rate]
-  (let [il     (first (m/shape input))
-        bp     (/ il 2.0)
-        output (m/emap (fn [x] (if (>= x bp) 1 0)) (m/mmul weight input))
-        diff   (m/sub target output)
-        sumdif  (reduce + diff)]
-    (println "----")
-    (println "target:" target)
-    (println "output:" output)
-    (println "diff:" diff)
-    {:weight (m/array (map (fn [x] (m/add (m/slice weight x) (m/mul (m/slice diff x) learning_rate))) (range il)))
-     :difference sumdif
-     :output output}))
+(defn sigmoid-back [output target weight bias learning_rate]
+  (let [diff   (m/mul (m/sub  target output) 2)
+        deriv  (m/mul output (m/sub 1.0 output))
+        gderiv (m/mul diff deriv)
+        g_w    (m/mmul (m/transpose weight) gderiv)
+        new_w  (m/add weight (m/mul learning_rate g_w))
+        new_b  (m/add bias   (m/mul learning_rate gderiv))
+        sumdif (reduce + diff)]
+    {:weight new_w
+     :bias new_b
+     :difference sumdif}))
+
+(defn sigmoid-layer [initial-options input-chan]
+  (let [out-chan (chan)
+        maint-chan (chan)]
+    (go
+      (let [firstinput (<! input-chan)]
+        (loop  [w (:weight initial-options)
+                b (:bias initial-options)
+                l (:learning_rate initial-options)
+                i firstinput]
+               (let [output (sigmoid-activation w b i)]
+                 (>! out-chan output)
+                 (let [ni (<! input-chan)
+                       nw (sigmoid-back output ni w b l)]
+                   (>! maint-chan nw)
+               (recur (:weight nw) (:bias nw) l ni))))))
+    {:out out-chan :maint maint-chan}))
 
 
-(defn iter [initial_weight data learning_rate]
-  (loop [weight initial_weight
-         diffs []
-         idx   0]
-    (if (>= idx (count data))
-      {:weight weight
-       :difference diffs}
-      (let [dp (nth data idx)
-            input (:value dp)
-            label (:label dp)
-            no (layer input label weight learning_rate)]
-        (println "weight:" (:weight no))
-      (recur (:weight no) (conj diffs (:difference no)) (inc idx))))))
 
 
 
@@ -48,32 +55,23 @@
   (reduce + (map-indexed (fn [idx x]
          (if (zero? x) 0 idx)) v)))
 
-(def sample-data (map (fn [x]
-                        {:value (m/array (mapNum2Vec x))
-                         :label (m/array (mapNum2Vec (* x 2)))}) (repeatedly 100 #(rand-int 5))))
+(defn print-progress [c]
+  (go (while true
+        (println (<! c)))))
 
-
-(def initial-weights (m/array (repeatedly 9 #(m/array (repeatedly 9 rand)))))
-
-(m/mmul initial-weights (m/array (mapNum2Vec 2)))
-
-(def final-weights (iter initial-weights sample-data 0.1))
-
-
-(layer (m/array (mapNum2Vec 2)) (m/array (mapNum2Vec 4)) (:weight final-weights) 0.01)
-(println (:difference final-weights))
-
-(def sample-data_2 [
-                    {:value [0 1] :label [0 1]}
-                    {:value [0 1] :label [0 1]}
-                    {:value [1 0] :label [0 1]}
-                    {:value [1 0] :label [0 1]}
-                    {:value [1 1] :label [0 1]}
-                    {:value [1 1] :label [0 1]}
-                    {:value [0 0] :label [0 1]}
-                    {:value [0 0] :label [0 1]}])
-(def initial-weights (m/array (repeatedly 2 #(m/array (repeatedly 2 rand)))))
-(def final-weights (iter initial-weights sample-data_2 0.1))
-(layer (m/array [0 1]) (m/array [0 1]) (:weight final-weights) 0.1)
-(println initial-weights)
-(println final-weights)
+(defn test-l []
+ (let [data (flatten (map (fn [x] [(m/array (mapNum2Vec x)) (m/array (mapNum2Vec (* x 2)))])
+                          (repeatedly 100 #(rand-int 5))))
+       input-chan (chan)
+       initial-weights (m/array (repeatedly 9 #(r/sample-normal 9)))
+       initial-bias (r/sample-normal 9)
+       l  (sigmoid-layer {:weight initial-weights
+                          :bias initial-bias
+                          :learning_rate 0.1} input-chan)]
+   (print-progress (:maint l))
+   (println "Start")
+   (go
+       (doseq [i data]
+         (>!! input-chan i)
+         (println (<! (:out l)))
+         ))))
