@@ -7,6 +7,8 @@
     [clojure.core.async :as a :refer [>! <! >!! <!! go go-loop chan buffer close! thread alts! alts!! timeout]]
     ))
 
+(use '(incanter core charts stats datasets))
+
 (import '[java.util Random])
 
 (m/set-current-implementation :vectorz)  ;; use Vectorz as default matrix
@@ -26,25 +28,64 @@
      :bias new_b
      :difference sumdif}))
 
-(defn sigmoid-layer [initial-options input-chan]
-  (let [out-chan (chan)
+(defn sigmoid-layer [options input-chan]
+  (let [out-chan   (chan)
         maint-chan (chan)]
-    (go
-      (let [firstinput (<! input-chan)]
-        (loop  [w (:weight initial-options)
-                b (:bias initial-options)
-                l (:learning_rate initial-options)
-                i firstinput]
+    (go-loop [w (:weight        options)
+              b (:bias          options)
+              l (:learning_rate options)
+              i (<! input-chan)]
                (let [output (sigmoid-activation w b i)]
                  (>! out-chan output)
                  (let [ni (<! input-chan)
                        nw (sigmoid-back output ni w b l)]
-                   (>! maint-chan nw)
-               (recur (:weight nw) (:bias nw) l ni))))))
-    {:out out-chan :maint maint-chan}))
+                   (>! maint-chan (assoc nw :id (:id options)))
+               (recur (:weight nw)
+                      (:bias nw)
+                      l
+                      ni))))
+    {:out   out-chan
+     :maint maint-chan}))
+
+(defn createLayer [values input-chan & {:keys [learning_rate] :or {learning_rate 0.1}}]
+  (let [l   (sigmoid-layer (assoc values  :learning_rate learning_rate) input-chan)]
+    l))
+
+(defn createStack [items input-chan]
+  (loop [idx 0
+         prev-chan input-chan
+         package []]
+    (if (>= idx (count items))
+      {:out prev-chan :maints package}
+      (let [item  (nth items idx)
+            l     (createLayer item prev-chan)
+            out   (:out l)
+            maint (:maint l)]
+      (recur (inc idx) out (conj package maint))))))
 
 
+(defn stack [items input-chan]
+  (let [out-chan   (chan)
+        maint-chan (chan)
+        s          (createStack items input-chan)
+        m          (a/merge (:maints s))]
+    (go-loop []
+         (>! out-chan (<! (:out s)))
+         (>! maint-chan (<! m))
+        (recur))
+  {:out out-chan
+   :maint maint-chan}))
 
+(defn getNormalVector[size]
+     (r/sample-normal size))
+
+(defn getNormalMatrix [size]
+     (m/array (repeatedly size #(r/sample-normal size))))
+
+(defn init-Layer [id size]
+  (let [initial-weights (getNormalMatrix size)
+        initial-bias  (getNormalVector size)]
+    {:id id :weight initial-weights :bias initial-bias}))
 
 
 (defn mapNum2Vec [n]
@@ -57,21 +98,29 @@
 
 (defn print-progress [c]
   (go (while true
-        (println (<! c)))))
+        (let [i (<! c)]
+        (println (:id i) " = " (:difference i))))))
+
+(defn generate-m2 []
+  (flatten (map (fn [x] [(m/array (mapNum2Vec x)) (m/array (mapNum2Vec (* x 2)))])
+                            (repeatedly 1000 #(rand-int 5)))))
 
 (defn test-l []
- (let [data (flatten (map (fn [x] [(m/array (mapNum2Vec x)) (m/array (mapNum2Vec (* x 2)))])
-                          (repeatedly 100 #(rand-int 5))))
+ (let [data (generate-m2)
        input-chan (chan)
-       initial-weights (m/array (repeatedly 9 #(r/sample-normal 9)))
-       initial-bias (r/sample-normal 9)
-       l  (sigmoid-layer {:weight initial-weights
-                          :bias initial-bias
-                          :learning_rate 0.1} input-chan)]
+       l  (createLayer (init-Layer "test" 9) input-chan)]
    (print-progress (:maint l))
-   (println "Start")
    (go
        (doseq [i data]
          (>!! input-chan i)
-         (println (<! (:out l)))
-         ))))
+         (<! (:out l))))))
+
+(defn test-m []
+ (let [data (generate-m2)
+       input-chan (chan)
+       l  (stack [(init-Layer "l1" 9) (init-Layer "l2" 9)] input-chan)]
+   (print-progress (:maint l))
+   (go
+       (doseq [i data]
+         (>!! input-chan i)
+         (<! (:out l))))))
